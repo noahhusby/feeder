@@ -1,62 +1,85 @@
-"$STAGE/.venv/bin/python" -m py_compile "$STAGE/feeder.py"
-chown -R root:root "$STAGE"
-chmod -R a+rX "$STAGE"
+#!/bin/bash
+set -euo pipefail
 
-# New deployment is prepared. Stop and remove the old unit before replacing it.
+if [[ $EUID -ne 0 ]]; then
+    echo 'Run with: sudo bash install.sh'
+    exit 1
+fi
+
+SOURCE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+TARGET=/opt/feeder
+
+# Check source files before stopping or deleting anything.
+for file in feeder.py pyproject.toml templates/index.html static/app.css static/app.js; do
+    [[ -f "$SOURCE/$file" ]] || { echo "Missing: $SOURCE/$file"; exit 1; }
+done
+[[ "$SOURCE" != /opt/feeder && "$SOURCE" != /opt/feeder/* ]] || {
+    echo 'Run this from the cloned repository, outside /opt/feeder.'; exit 1;
+}
+[[ ! -L "$TARGET" ]] || { echo 'Refusing to replace a symlink at /opt/feeder.'; exit 1; }
+python3 -c 'import tomllib' || { echo 'Python 3.11+ is required.'; exit 1; }
+
+echo '[1/6] Stopping existing service'
 systemctl stop feeder.service 2>/dev/null || true
 systemctl disable feeder.service 2>/dev/null || true
-rm -f -- "$UNIT"
+rm -f /etc/systemd/system/feeder.service
 systemctl daemon-reload
-rm -rf -- "$PREVIOUS"
-if [[ -d "$TARGET" ]]; then
-    mv -- "$TARGET" "$PREVIOUS"
-fi
-mv -- "$STAGE" "$TARGET"
 
-# Use python -m, so relocating the staged venv doesn't use stale script shebangs.
-cat > "$UNIT" <<'UNIT'
+echo '[2/6] Installing system dependencies'
+apt-get update
+apt-get install -y --no-install-recommends python3-venv python3-lgpio
+
+echo '[3/6] Preparing service user'
+id feeder >/dev/null 2>&1 || useradd --system --user-group --no-create-home --shell /usr/sbin/nologin feeder
+usermod -aG gpio,video feeder
+
+echo '[4/6] Replacing application files in /opt/feeder'
+rm -rf -- "$TARGET"
+mkdir -p "$TARGET"
+cp -- "$SOURCE/feeder.py" "$SOURCE/pyproject.toml" "$TARGET/"
+cp -rL -- "$SOURCE/templates" "$SOURCE/static" "$TARGET/"
+
+echo '[5/6] Installing Python dependencies'
+python3 -m venv --system-site-packages "$TARGET/.venv"
+python3 - "$TARGET" <<'PY'
+import pathlib
+import tomllib
+import sys
+root = pathlib.Path(sys.argv[1])
+deps = tomllib.loads((root / 'pyproject.toml').read_text())['project']['dependencies']
+(root / 'requirements.deploy.txt').write_text('\n'.join([*deps, 'gunicorn']) + '\n')
+PY
+"$TARGET/.venv/bin/python" -m pip install \
+    --only-binary=opencv-python,opencv-python-headless \
+    -r "$TARGET/requirements.deploy.txt"
+chmod -R a+rX "$TARGET"
+
+echo '[6/6] Installing and starting service'
+cat > /etc/systemd/system/feeder.service <<'UNIT'
 [Unit]
-Description=Feeder Shapeoko feedhold controller
+Description=Feeder CNC feedhold controller
 After=network.target
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 [Service]
-Type=simple
 User=feeder
-Group=feeder
 SupplementaryGroups=gpio video
+StateDirectory=feeder
 WorkingDirectory=/var/lib/feeder
 Environment=PYTHONPATH=/opt/feeder
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=GPIOZERO_PIN_FACTORY=lgpio
-StateDirectory=feeder
 ExecStart=/opt/feeder/.venv/bin/python -m gunicorn --workers 1 --threads 4 --bind 127.0.0.1:8000 --access-logfile - --error-logfile - feeder:app
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
-UMask=0027
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-chmod 644 "$UNIT"
 systemctl daemon-reload
 systemctl reset-failed feeder.service 2>/dev/null || true
 systemctl enable --now feeder.service
 
-# Check actual HTML delivery, without activating any relay.
-for attempt in {1..20}; do
-    if systemctl is-active --quiet feeder.service && \
-        curl --fail --silent --max-time 2 http://127.0.0.1:8000/ >/dev/null; then
-        echo 'Feeder deployed successfully at http://127.0.0.1:8000'
-        echo 'Logs: journalctl -u feeder -f'
-        echo 'Previous deployment retained at /opt/feeder.previous until next install.'
-        exit 0
-    fi
-    sleep 1
-done
-journalctl -u feeder.service -n 40 --no-pager
-echo 'Deployment did not pass its startup check; see logs above.' >&2
-exit 1
+echo 'Installation complete; service start requested.'
+echo 'View logs: journalctl -u feeder -f'
