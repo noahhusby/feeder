@@ -2,6 +2,7 @@
 import atexit
 import logging
 import threading
+import time
 
 import cv2
 from flask import Flask, Response, request, render_template
@@ -152,20 +153,17 @@ class CNCServer:
         )
 
     def set_feedhold(self):
-        data = request.get_json(silent=True)
-
-        if not isinstance(data, dict) or type(data.get("active")) is not bool:
-            return {"error": "'active' must be a JSON boolean"}, 400
-
         with self._gpio_lock:
             if self._stop.is_set():
                 return {"error": "Server shutting down"}, 503
 
-            self._feedhold.value = data["active"]
-            active = bool(self._feedhold.value)
+            try:
+                self._feedhold.on()
+                time.sleep(0.2)
+            finally:
+                self._feedhold.off()
 
-        # Reports the commanded output, not confirmation from the CNC.
-        return {"feedhold_active": active}
+        return {"ok": True}
 
     def close(self):
         with self._gpio_lock:
