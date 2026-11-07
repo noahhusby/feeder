@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#ffffff">
+
+    <title>Feeder</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='app.css') }}"
+    >
+    <script
+        src="{{ url_for('static', filename='app.js') }}"
+        defer
+    ></script>
+</head>
+
+<body>
+<main class="page">
+    <header class="masthead">
+        <h1>Feeder</h1>
+        <p>A web-based feedhold controller for a Shapeoko 5.</p>
+        <div class="divider" aria-hidden="true"></div>
+    </header>
+
+    <div class="content">
+        <section aria-labelledby="camera-heading">
+            <div class="field-heading">
+                <h2 id="camera-heading">Camera</h2>
+                <span>Video only</span>
+            </div>
+
+            <div class="camera-frame">
+                <img
+                    id="camera"
+                    data-src="{{ url_for('camera_stream') }}"
+                    alt="Live view of the Shapeoko 5"
+                >
+            </div>
+
+            <p id="camera-status" class="footnote" role="status">
+                Camera feed loads automatically.
+            </p>
+        </section>
+
+        <section aria-labelledby="control-heading">
+            <div class="field-heading">
+                <h2 id="control-heading">Feedhold</h2>
+                <span>Shapeoko 5</span>
+            </div>
+
+            <p class="description">
+                Request a feedhold using the controller input.
+            </p>
+
+            <div class="actions">
+                <button
+                    id="feedhold-button"
+                    class="danger-button"
+                    type="button"
+                    disabled
+                >
+                    Feedhold
+                </button>
+
+                <button
+                    id="release-button"
+                    class="secondary-button"
+                    type="button"
+                    disabled
+                >
+                    Release feedhold input
+                </button>
+            </div>
+
+            <p class="footnote">
+                Releasing the input does not send Cycle Start.
+            </p>
+
+            <p
+                id="control-status"
+                class="status"
+                role="status"
+                aria-live="polite"
+            ></p>
+
+            <p class="footnote">
+                Status confirms the commanded output, not the machine state.
+            </p>
+
+            <noscript>
+                <p>JavaScript is required to operate the controls.</p>
+            </noscript>
+        </section>
+    </div>
+</main>
+
+<dialog
+    id="confirmation"
+    aria-labelledby="confirmation-title"
+    aria-describedby="confirmation-description"
+>
+    <h2 id="confirmation-title">Request a feedhold?</h2>
+
+    <p id="confirmation-description">
+        This will activate the Shapeoko 5 feedhold input.
+    </p>
+
+    <div class="dialog-actions">
+        <button
+            id="cancel-button"
+            class="secondary-button"
+            type="button"
+            autofocus
+        >
+            Cancel
+        </button>
+
+        <button
+            id="confirm-button"
+            class="danger-button"
+            type="button"
+        >
+            Confirm feedhold
+        </button>
+    </div>
+</dialog>
+</body>
+</html>
