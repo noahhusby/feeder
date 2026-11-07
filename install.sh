@@ -69,7 +69,7 @@ Environment=PYTHONPATH=/opt/feeder
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=GPIOZERO_PIN_FACTORY=lgpio
-ExecStart=/opt/feeder/.venv/bin/python -m gunicorn --workers 1 --threads 4 --bind 127.0.0.1:8000 --access-logfile - --error-logfile - feeder:app
+ExecStart=/opt/feeder/.venv/bin/python -m gunicorn --workers 1 --threads 4 --bind 0.0.0.0:8000 --access-logfile - --error-logfile - feeder:app
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
