@@ -15,7 +15,25 @@
         defer
     ></script>
 </head>
+<dialog
+    id="feedhold-dialog"
+    aria-labelledby="dialog-title"
+    aria-describedby="dialog-description"
+>
+    <h2 id="dialog-title">Request a feedhold?</h2>
+    <p id="dialog-description">
+        Send a feedhold to the Shapeoko 5?
+    </p>
 
+    <div class="dialog-actions">
+        <button id="cancel-feedhold" class="cancel-button" type="button" autofocus>
+            Cancel
+        </button>
+        <button id="confirm-feedhold" class="confirm-button" type="button">
+            Feedhold
+        </button>
+    </div>
+</dialog>
 <body>
 <main class="page">
     <header class="masthead">

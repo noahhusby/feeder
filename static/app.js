@@ -5,31 +5,67 @@ const cameraStatus = document.querySelector("#camera-status");
 const feedholdButton = document.querySelector("#feedhold-button");
 const controlStatus = document.querySelector("#control-status");
 
+const dialog = document.querySelector("#feedhold-dialog");
+const cancelButton = document.querySelector("#cancel-feedhold");
+const confirmButton = document.querySelector("#confirm-feedhold");
+
 let pending = false;
+let cameraRunning = false;
 
 function setStatus(message, kind = "") {
     controlStatus.textContent = message;
     controlStatus.className = `status ${kind}`.trim();
 }
 
+function startCamera() {
+    if (document.hidden || cameraRunning) return;
+
+    cameraRunning = true;
+    cameraStatus.textContent = "";
+
+    const url = new URL(camera.dataset.src, window.location.href);
+    url.searchParams.set("session", Date.now());
+    camera.src = url.href;
+}
+
+function stopCamera() {
+    cameraRunning = false;
+    camera.removeAttribute("src");
+    cameraStatus.textContent = "Camera paused.";
+}
+
 camera.addEventListener("error", () => {
+    if (!cameraRunning) return;
+
     cameraStatus.textContent =
         "Camera unavailable. Reload the page to reconnect.";
 });
 
-camera.src = camera.dataset.src;
-
-feedholdButton.disabled = false;
-
-feedholdButton.addEventListener("click", async () => {
-    if (pending) return;
-
-    if (!window.confirm("Send a feedhold to the Shapeoko 5?")) {
-        return;
+document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+        stopCamera();
+    } else {
+        startCamera();
     }
+});
+
+window.addEventListener("pagehide", stopCamera);
+window.addEventListener("pageshow", startCamera);
+
+feedholdButton.addEventListener("click", () => {
+    if (!pending && !dialog.open) dialog.showModal();
+});
+
+cancelButton.addEventListener("click", () => dialog.close());
+
+confirmButton.addEventListener("click", async () => {
+    if (pending) return;
 
     pending = true;
     feedholdButton.disabled = true;
+    confirmButton.disabled = true;
+    dialog.close();
+
     setStatus("Sending feedhold…");
 
     const controller = new AbortController();
@@ -67,5 +103,9 @@ feedholdButton.addEventListener("click", async () => {
         clearTimeout(timeout);
         pending = false;
         feedholdButton.disabled = false;
+        confirmButton.disabled = false;
     }
 });
+
+feedholdButton.disabled = false;
+startCamera();

@@ -35,20 +35,8 @@ class CNCServer:
             initial_value=False,
         )
 
-        self._camera = cv2.VideoCapture(camera_device, cv2.CAP_V4L2)
-
-        if not self._camera.isOpened():
-            self._camera.release()
-            self._feedhold.close()
-            raise RuntimeError("Could not open webcam")
-
-        self._camera.set(
-            cv2.CAP_PROP_FOURCC,
-            cv2.VideoWriter_fourcc(*"MJPG"),
-        )
-        self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        self._camera.set(cv2.CAP_PROP_FPS, fps)
+        self._camera_settings = (camera_device, width, height, fps)
+        self._viewers = 0
 
         self._encode_options = [
             cv2.IMWRITE_JPEG_QUALITY,
@@ -71,17 +59,57 @@ class CNCServer:
         atexit.register(self.close)
 
     def _capture_loop(self):
-        """Only this thread reads from the camera."""
+        """Open the webcam only while at least one client is watching."""
+        camera = None
+
         try:
             while not self._stop.is_set():
-                success, frame = self._camera.read()
+                with self._frame_ready:
+                    watching = self._viewers > 0
 
-                if not success:
-                    logging.warning("Camera read failed; retrying")
+                if not watching:
+                    if camera is not None:
+                        camera.release()
+                        camera = None
+
                     with self._frame_ready:
                         self._jpeg = None
-                        self._frame_ready.notify_all()
-                    self._stop.wait(0.25)
+                        self._frame_ready.wait_for(
+                            lambda: self._stop.is_set() or self._viewers > 0
+                        )
+                    continue
+
+                if camera is None:
+                    device, width, height, fps = self._camera_settings
+
+                    camera = cv2.VideoCapture(device, cv2.CAP_V4L2)
+
+                    if not camera.isOpened():
+                        camera.release()
+                        camera = None
+                        logging.warning("Could not open webcam; retrying")
+                        self._stop.wait(1)
+                        continue
+
+                    camera.set(
+                        cv2.CAP_PROP_FOURCC,
+                        cv2.VideoWriter_fourcc(*"MJPG"),
+                    )
+                    camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                    camera.set(cv2.CAP_PROP_FPS, fps)
+
+                success, frame = camera.read()
+
+                if not success:
+                    logging.warning("Camera read failed; reopening")
+                    camera.release()
+                    camera = None
+
+                    with self._frame_ready:
+                        self._jpeg = None
+
+                    self._stop.wait(0.5)
                     continue
 
                 success, encoded = cv2.imencode(
@@ -91,11 +119,15 @@ class CNCServer:
                     continue
 
                 with self._frame_ready:
-                    self._jpeg = encoded.tobytes()
-                    self._sequence += 1
-                    self._frame_ready.notify_all()
+                    if self._viewers > 0:
+                        self._jpeg = encoded.tobytes()
+                        self._sequence += 1
+                        self._frame_ready.notify_all()
+
         finally:
-            self._camera.release()
+            if camera is not None:
+                camera.release()
+
             self._stop.set()
             with self._frame_ready:
                 self._frame_ready.notify_all()
@@ -103,46 +135,57 @@ class CNCServer:
     def _video_frames(self):
         last_sequence = -1
 
-        while not self._stop.is_set():
-            with self._frame_ready:
-                ready = self._frame_ready.wait_for(
-                    lambda: self._stop.is_set()
-                    or (
-                        self._jpeg is not None
-                        and self._sequence != last_sequence
-                    ),
-                    timeout=5,
-                )
+        with self._frame_ready:
+            self._viewers += 1
+            self._frame_ready.notify_all()
 
-                if self._stop.is_set():
-                    return
+        try:
+            while not self._stop.is_set():
+                with self._frame_ready:
+                    ready = self._frame_ready.wait_for(
+                        lambda: self._stop.is_set()
+                                or (
+                                        self._jpeg is not None
+                                        and self._sequence != last_sequence
+                                ),
+                        timeout=2,
+                    )
 
-                if not ready:
+                    if self._stop.is_set():
+                        return
+
+                    if ready:
+                        jpeg = self._jpeg
+                        last_sequence = self._sequence
+                    else:
+                        jpeg = None
+
+                if jpeg is None:
+                    # Keep yielding while the camera is unavailable so the
+                    # server can notice a disconnected client.
+                    yield b"\r\n"
                     continue
 
-                jpeg = self._jpeg
-                last_sequence = self._sequence
+                yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: "
+                        + str(len(jpeg)).encode()
+                        + b"\r\n\r\n"
+                        + jpeg
+                        + b"\r\n"
+                )
 
-            # Release the lock before sending to a potentially slow client.
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n"
-                b"Content-Length: "
-                + str(len(jpeg)).encode()
-                + b"\r\n\r\n"
-                + jpeg
-                + b"\r\n"
-            )
+        finally:
+            with self._frame_ready:
+                self._viewers -= 1
+
+                if self._viewers == 0:
+                    self._jpeg = None
+
+                self._frame_ready.notify_all()
 
     def camera_stream(self):
-        with self._frame_ready:
-            available = self._frame_ready.wait_for(
-                lambda: self._jpeg is not None or self._stop.is_set(),
-                timeout=3,
-            )
-            if not available or self._stop.is_set():
-                return {"error": "Camera unavailable"}, 503
-
         return Response(
             self._video_frames(),
             content_type="multipart/x-mixed-replace; boundary=frame",
@@ -151,6 +194,7 @@ class CNCServer:
                 "X-Accel-Buffering": "no",
             },
         )
+
 
     def set_feedhold(self):
         with self._gpio_lock:
