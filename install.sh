@@ -1,67 +1,3 @@
-#!/usr/bin/env bash
-# Run from any directory: sudo bash /path/to/cloned/repo/install.sh
-set -Eeuo pipefail
-
-[[ $EUID -eq 0 ]] || { echo 'Run with sudo bash install.sh' >&2; exit 1; }
-SOURCE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-TARGET=/opt/feeder
-STAGE=/opt/feeder.staging
-PREVIOUS=/opt/feeder.previous
-UNIT=/etc/systemd/system/feeder.service
-
-# Serialize deployments, including cleanup.
-exec 9>/run/lock/feeder-install.lock
-flock -n 9 || { echo 'Another Feeder installation is running.' >&2; exit 1; }
-
-for path in "$TARGET" "$STAGE" "$PREVIOUS"; do
-    [[ "$SOURCE/" != "$path/"* ]] || {
-        echo 'Run this installer from your cloned repository outside /opt/feeder*.' >&2
-        exit 1
-    }
-    [[ ! -L "$path" ]] || { echo "Refusing symlink: $path" >&2; exit 1; }
-done
-for file in feeder.py pyproject.toml templates/index.html static/app.css static/app.js; do
-    [[ -f "$SOURCE/$file" ]] || { echo "Missing: $SOURCE/$file" >&2; exit 1; }
-done
-
-# Current Raspberry Pi OS (64-bit), with distro Python 3.11+.
-python3 -c 'import sys; assert sys.version_info >= (3, 11), "Installer requires Python 3.11+"'
-[[ $(dpkg --print-architecture) == arm64 ]] || {
-    echo 'This installer targets 64-bit Raspberry Pi OS (arm64).' >&2; exit 1;
-}
-
-apt-get update
-apt-get install -y python3-venv python3-lgpio v4l-utils curl rsync libgl1 libglib2.0-0
-getent group gpio >/dev/null
-getent group video >/dev/null
-if ! id feeder >/dev/null 2>&1; then
-    useradd --system --user-group --home-dir /var/lib/feeder --create-home \
-        --shell /usr/sbin/nologin feeder
-fi
-usermod -aG gpio,video feeder
-
-# These are deployment-owned folders, never the Git checkout.
-rm -rf -- "$STAGE"
-mkdir -p "$STAGE"
-cp -- "$SOURCE/feeder.py" "$SOURCE/pyproject.toml" "$STAGE/"
-rsync -rL -- "$SOURCE/templates/" "$STAGE/templates/"
-rsync -rL -- "$SOURCE/static/" "$STAGE/static/"
-
-# Use apt's lgpio backend; install the declared application dependencies with pip.
-python3 -m venv --system-site-packages "$STAGE/.venv"
-"$STAGE/.venv/bin/python" -m pip install --upgrade pip
-python3 - "$STAGE/pyproject.toml" "$STAGE/requirements.deploy.txt" <<'PY'
-import pathlib
-import sys
-import tomllib
-project = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["project"]
-deps = project.get("dependencies", [])
-pathlib.Path(sys.argv[2]).write_text("\n".join([*deps, "gunicorn"]) + "\n")
-PY
-# Fail rather than spend hours compiling OpenCV if no compatible wheel exists.
-"$STAGE/.venv/bin/python" -m pip install --only-binary=opencv-python \
-    -r "$STAGE/requirements.deploy.txt"
-"$STAGE/.venv/bin/python" -c 'import cv2, flask, gpiozero, lgpio, gunicorn'
 "$STAGE/.venv/bin/python" -m py_compile "$STAGE/feeder.py"
 chown -R root:root "$STAGE"
 chmod -R a+rX "$STAGE"
@@ -90,7 +26,8 @@ Type=simple
 User=feeder
 Group=feeder
 SupplementaryGroups=gpio video
-WorkingDirectory=/opt/feeder
+WorkingDirectory=/var/lib/feeder
+Environment=PYTHONPATH=/opt/feeder
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=GPIOZERO_PIN_FACTORY=lgpio
